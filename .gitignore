@@ -1,0 +1,38 @@
+# Python virtual environments and generated files
+**/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Private audio, generated data, and model artifacts
+data/private/
+data/recordings/
+models/weights/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Flutter and Android generated output
+**/.dart_tool/
+**/.packages
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/build/
+mobile_app/android/local.properties
+mobile_app/ios/Flutter/Generated.xcconfig
+mobile_app/ios/Flutter/flutter_export_environment.sh
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
