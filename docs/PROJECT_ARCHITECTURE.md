@@ -47,7 +47,7 @@ CONTROLLED VoIP/SIP: caller ↔ controlled gateway ↔ user client
                                   └→ desktop analysis; optional isolated honeypot
 ```
 
-Desktop responsibilities: audio gateway, model execution, feature fusion, deterministic risk scoring, incident records, evidence generation, and optional controlled VoIP/honeypot services. Mobile responsibilities: consent, supported call integration, user-controlled capture/streaming, alerts, and viewing reports. Do not place core AI analysis on the phone for the prototype.
+Desktop responsibilities: audio gateway, model execution, feature fusion, deterministic risk scoring, incident records, evidence generation, and optional controlled VoIP/honeypot services. For Phase 2, the desktop also hosts a local browser dashboard to create and approve phone pairings, display connection state, and revoke devices. A loopback dashboard/API listener is separate from the HTTPS/WSS phone listener; dashboard management stays loopback-only when the phone listener is explicitly enabled on detected private IPv4 interfaces. The dashboard selects which private address is encoded into a phone pairing QR. LAN setting changes require a service restart, and pairing is blocked until the active listener matches the saved setting. Mobile responsibilities: consent, supported call integration, user-controlled capture/streaming, alerts, and viewing reports. Do not place core AI analysis on the phone for the prototype.
 
 ## 4. Technology choices
 
@@ -124,6 +124,7 @@ An evidence export may contain incident metadata, transcript, risk findings, a r
 - Explicit consent and visible indication before audio analysis/recording. Obtain any required participant consent for the deployment jurisdiction.
 - Data minimization: transient audio buffer for live analysis; no permanent recording of every call. Save an incident only through a clear user choice and retention policy.
 - Encrypt phone-to-desktop traffic (HTTPS/WSS/TLS); authenticate devices and protect local credentials. Do not expose the desktop gateway to the public Internet by default.
+- Pairing uses an expiring, single-use QR code or manual entry of the desktop address, pairing code, and SHA-256 certificate fingerprint. The user approves each phone on the desktop. Pin the desktop certificate on the phone, issue a distinct per-device credential, keep only a salted credential hash on desktop, and support revocation.
 - Separate original evidence from redacted exports. Offer user-controlled PII censorship for transcript/report and validated audio redaction where feasible.
 - Least privilege on mobile; request only permissions needed for the active feature. Microphone foreground-service requirements are platform/version-specific.
 - Access controls, deletion/export controls, secure local storage, audit of evidence actions, and safe handling of model inputs/outputs.

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101827">
+  <title>Vishing Detection · Desktop</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">V</div>
+    <div><p class="eyebrow">LOCAL DESKTOP SERVICE</p><h1>Vishing Detection</h1></div>
+    <div class="service-pill"><span class="pulse"></span><span id="service-label">Checking service…</span></div>
+  </header>
+
+  <main>
+    <section class="hero card">
+      <div class="hero-copy">
+        <p class="eyebrow">PHONE CONNECTION</p>
+        <h2>Connect your phone<br>to this desktop.</h2>
+        <p class="muted">Pair a trusted phone to show its connection status here. Analysis stays on this computer.</p>
+        <button class="primary" id="start-pairing">Start pairing</button>
+      </div>
+      <div class="connection-visual" aria-label="Phone connected to desktop">
+        <div class="device phone"><span class="device-dot"></span><span>PHONE</span><b id="phone-count">0</b></div>
+        <div class="link-line"><i></i><i></i><i></i></div>
+        <div class="device desktop"><span class="screen"><span></span></span><span>DESKTOP</span></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card pairing-card">
+        <div class="section-head"><div><p class="eyebrow">PAIR A DEVICE</p><h3>Secure pairing</h3></div><span id="pairing-badge" class="badge neutral">Not started</span></div>
+        <div id="pairing-empty" class="empty-state"><div class="qr-placeholder">▦</div><p>Start pairing to create a one-time QR code.</p></div>
+        <div id="pairing-active" class="pairing-content hidden">
+          <img id="pairing-qr" alt="One-time phone pairing QR code">
+          <div class="pairing-meta"><span class="label">Fallback code</span><strong id="pairing-code">—</strong><span class="label">Expires</span><span id="pairing-expiry">—</span></div>
+        </div>
+        <p id="pairing-endpoint" class="pairing-endpoint hidden"></p>
+        <p class="hint">The code expires after three minutes and can be used once. Approve the phone below to finish pairing.</p>
+      </article>
+
+      <article class="card network-card">
+        <div class="section-head"><div><p class="eyebrow">NETWORK ACCESS</p><h3>Local network</h3></div><span id="network-badge" class="badge neutral">Loopback only</span></div>
+        <p class="muted">Choose a trusted Wi-Fi for the encrypted phone connection. The desktop dashboard and approval controls always stay on this computer.</p>
+        <label class="toggle-row"><span><strong>Allow paired phones on local network</strong><small>After changing this, restart the desktop service before pairing.</small></span><input id="lan-toggle" type="checkbox"><span class="toggle"></span></label>
+        <label id="address-picker-wrap" class="address-picker hidden"><span>Desktop address for this Wi-Fi</span><select id="lan-address-select"></select></label>
+        <div id="network-note" class="note">Network access is off. The service is not reachable from your phone yet.</div>
+        <p id="lan-addresses" class="address-list"></p>
+      </article>
+    </section>
+
+    <section class="card devices-card">
+      <div class="section-head"><div><p class="eyebrow">TRUSTED DEVICES</p><h3>Paired phones</h3></div><span id="device-total" class="count">0</span></div>
+      <div id="requests" class="requests"></div>
+      <div id="devices" class="device-list"><div class="empty-row">No phones are paired yet.</div></div>
+    </section>
+    <p class="footer-note"><span>●</span> Connection only · Audio capture and analysis are not active in this phase.</p>
+  </main>
+  <script src="/assets/dashboard.js" defer></script>
+</body>
+</html>
