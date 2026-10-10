@@ -35,7 +35,17 @@ async def lifespan(app: FastAPI):
     app.state.allow_lan = runtime_settings.allow_lan
     if not hasattr(app.state, "store"):
         app.state.store = DesktopStore(runtime_settings, fingerprint)
-    yield
+    async def expire_voice_messages() -> None:
+        while True:
+            await asyncio.to_thread(app.state.store.expire_voice_messages)
+            await asyncio.sleep(60)
+
+    cleanup_task = asyncio.create_task(expire_voice_messages())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
 
 
 app = FastAPI(title="Vishing Detection Desktop", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -77,7 +87,9 @@ async def serve() -> None:
     secure_servers = []
     for host in secure_hosts:
         secure_config = uvicorn.Config(
-            app, host=host, port=runtime_settings.secure_port, log_level="info", lifespan="off"
+            app, host=host, port=runtime_settings.secure_port, log_level="info", lifespan="off",
+            # SDP/ICE offers are larger than control-only pairing messages.
+            ws_max_size=262144, ws_max_queue=4, ws_ping_interval=5.0, ws_ping_timeout=5.0,
         )
         secure_config.load()
         secure_config.ssl = make_tls_context(runtime_settings)

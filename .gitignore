@@ -23,6 +23,7 @@ models/weights/
 
 # Flutter and Android generated output
 **/.dart_tool/
+**/.gradle-cache/
 **/.packages
 **/.flutter-plugins
 **/.flutter-plugins-dependencies

@@ -53,6 +53,40 @@ async function refresh() {
       </div>`).join('') : '<div class="empty-row">No phones are paired yet.</div>';
     byId('requests').innerHTML = state.pairing_requests.map((item) => `
       <div class="request-row"><div class="request-icon">⌁</div><div class="device-info"><strong>${escapeHtml(item.device_name)}</strong><small>Device ${escapeHtml(shortId(item.device_id))} · Request received ${formatTime(item.created_at)}</small></div><div class="actions"><button class="approve" data-approve="${escapeHtml(item.request_id)}">Approve</button><button class="reject" data-reject="${escapeHtml(item.request_id)}">Reject</button></div></div>`).join('');
+    const audioSessions = state.audio_sessions || [];
+    byId('audio-sessions').innerHTML = audioSessions.length ? audioSessions.map((item) => {
+      const syntheticTone = item.source === 'diagnostic_tone';
+      const webRtc = String(item.source || '').startsWith('app_webrtc_') || item.source === 'controlled_webrtc';
+      const statusLabels = {
+        armed: 'Armed · microphone off', receiving: 'Receiving audio frames',
+        disconnected: 'Disconnected', stopped: 'Stopped', revoked: 'Revoked'
+      };
+      const signal = Math.max(0, Math.min(100, Math.round((item.last_rms || 0) * 400)));
+      const lastPeak = Number(item.last_peak || 0);
+      const sampleNote = item.last_frame_at
+        ? (syntheticTone
+          ? (lastPeak === 0
+            ? 'Diagnostic tone source is selected, but the latest delivered frame contains only zero samples.'
+            : 'Non-zero synthetic diagnostic-tone samples confirmed; this is not microphone or call audio.')
+          : (lastPeak === 0
+            ? 'Latest delivered 20 ms frame contains only zero samples. Frames are arriving, but microphone sound is not confirmed.'
+            : 'Non-zero microphone samples detected in the latest delivered frame.'))
+        : (syntheticTone ? 'Waiting for synthetic diagnostic-tone frames.' : 'No audio frame has arrived yet.');
+      const sampleNoteClass = lastPeak === 0 ? 'audio-signal-note' : 'audio-signal-note signal-ok';
+      const sourceLabel = syntheticTone ? 'Synthetic 440 Hz diagnostic tone · no microphone' : webRtc ? `Controlled WebRTC · ${item.role === 'near' ? 'near-phone microphone' : item.role === 'far' ? 'far-phone received audio' : 'speaker'} · call ${item.call_id || 'unassigned'}` : item.source === 'file_replay' ? 'Paced file replay · diagnostic' : 'Cellular microphone';
+      const metrics = `${escapeHtml(sourceLabel)} · ${Number(item.frames_received || 0).toLocaleString()} frames · ${escapeHtml(item.sample_rate)} Hz mono PCM16 · ${escapeHtml(item.frame_duration_ms)} ms frames`;
+      return `<article class="audio-row">
+        <div class="audio-row-head"><div><strong>${escapeHtml(item.device_name)} · ${escapeHtml(shortId(item.device_id))}</strong><small>${escapeHtml(metrics)}</small></div><span class="row-status ${item.status === 'receiving' ? 'connected' : ''}">${escapeHtml(statusLabels[item.status] || item.status)}</span></div>
+        <div class="audio-metrics"><div class="signal-meter" aria-label="Microphone signal level"><span style="width:${signal}%"></span></div><div><small>Signal ${Math.round((item.last_rms || 0) * 100)}% · peak ${escapeHtml(item.last_peak)} · jitter ${escapeHtml(item.jitter_ewma_ms)} ms · RTT ${item.round_trip_ms == null ? '—' : `${escapeHtml(item.round_trip_ms)} ms`} · estimated one-way ${item.estimated_one_way_ms == null ? '—' : `${escapeHtml(item.estimated_one_way_ms)} ms`} (RTT ÷ 2) · gaps ${escapeHtml(item.sequence_gaps)} · dropped ${escapeHtml(item.dropped_frames)}</small><small class="${sampleNoteClass}">${escapeHtml(sampleNote)}</small></div></div>
+        <div class="audio-actions"><small>${item.last_frame_at ? `Last frame ${formatTime(item.last_frame_at)}` : 'No audio frames received'}</small><button class="play-audio" data-play-audio="${escapeHtml(item.stream_key || item.device_id)}" ${item.preview_available ? '' : 'disabled'}>Play recent 60 seconds</button></div>
+      </article>`;
+    }).join('') : '<div class="empty-row">No active or recent audio sessions.</div>';
+    const messages = state.voice_messages || [];
+    byId('voice-messages').innerHTML = messages.length ? messages.map((item) => `
+      <article class="audio-row">
+        <div class="audio-row-head"><div><strong>${escapeHtml(item.device_name)} · ${escapeHtml(shortId(item.device_id))}</strong><small>Call ${escapeHtml(item.call_id)} · ${Number(item.duration_seconds).toFixed(1)} seconds · ${(Number(item.file_size) / 1024).toFixed(0)} KB · received ${formatTime(item.created_at)}</small></div><span class="row-status connected">Stored locally</span></div>
+        <div class="audio-actions"><small>Auto-delete after 24 hours</small><span><button class="play-audio" data-play-message="${escapeHtml(item.message_id)}">Play clip</button> <button class="revoke" data-delete-message="${escapeHtml(item.message_id)}">Delete</button></span></div>
+      </article>`).join('') : '<div class="empty-row">No voice messages have been received.</div>';
     if (state.pairing_requests.length) {
       byId('pairing-badge').textContent = 'Approval needed';
       byId('pairing-badge').className = 'badge wait';
@@ -118,7 +152,29 @@ document.addEventListener('click', async (event) => {
   const approve = event.target.dataset.approve;
   const reject = event.target.dataset.reject;
   const revoke = event.target.dataset.revoke;
+  const playAudio = event.target.dataset.playAudio;
+  const playMessage = event.target.dataset.playMessage;
+  const deleteMessage = event.target.dataset.deleteMessage;
   try {
+    if (playAudio || playMessage) {
+      const audioContext = new AudioContext();
+      await audioContext.resume();
+      const path = playMessage
+        ? `/api/v1/desktop/voice-messages/${encodeURIComponent(playMessage)}.wav`
+        : `/api/v1/desktop/audio/${encodeURIComponent(playAudio)}/preview.wav`;
+      const response = await fetch(path, { cache: 'no-store' });
+      if (!response.ok) throw new Error('The requested audio is no longer available.');
+      const audioBuffer = await audioContext.decodeAudioData(await response.arrayBuffer());
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+      source.onended = () => audioContext.close();
+      source.start();
+      return;
+    }
+    if (deleteMessage && confirm('Permanently delete this locally stored voice message?')) {
+      await api(`/api/v1/desktop/voice-messages/${encodeURIComponent(deleteMessage)}`, { method: 'DELETE' });
+    }
     if (approve) await api(`/api/v1/desktop/pairing/${encodeURIComponent(approve)}/approve`, { method: 'POST', body: '{}' });
     if (reject) await api(`/api/v1/desktop/pairing/${encodeURIComponent(reject)}/reject`, { method: 'POST', body: '{}' });
     if (revoke && confirm('Revoke this phone? It will need to pair again before reconnecting.')) await api(`/api/v1/desktop/devices/${encodeURIComponent(revoke)}`, { method: 'DELETE' });

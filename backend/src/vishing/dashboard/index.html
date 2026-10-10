@@ -56,7 +56,17 @@
       <div id="requests" class="requests"></div>
       <div id="devices" class="device-list"><div class="empty-row">No phones are paired yet.</div></div>
     </section>
-    <p class="footer-note"><span>●</span> Connection only · Audio capture and analysis are not active in this phase.</p>
+    <section class="card audio-card">
+      <div class="section-head"><div><p class="eyebrow">LIVE AUDIO TRANSPORT</p><h3>Desktop audio sessions</h3></div><span class="badge neutral">RAM preview · 60 seconds</span></div>
+      <p class="muted">Cellular Protection uses only the supported microphone source. Controlled Digital Audio uses a consented WebRTC microphone track sent directly to this desktop. Call IDs and near/far roles group independent streams. The dashboard keeps at most 60 seconds per live stream in memory for explicit playback.</p>
+      <div id="audio-sessions" class="audio-list"><div class="empty-row">No active or recent audio sessions.</div></div>
+    </section>
+    <section class="card audio-card">
+      <div class="section-head"><div><p class="eyebrow">VOICE MESSAGES</p><h3>Recorded clips for analysis</h3></div><span class="badge neutral">Local disk · 24-hour retention</span></div>
+      <p class="muted">Only clips the phone user explicitly records and sends appear here. The desktop normalizes them to 16 kHz mono PCM WAV for later batch analysis; no analysis engine is added in this phase. Delete any clip here before its automatic expiry.</p>
+      <div id="voice-messages" class="audio-list"><div class="empty-row">No voice messages have been received.</div></div>
+    </section>
+    <p class="footer-note"><span>●</span> Live audio remains transient in RAM; explicitly sent voice messages are stored locally and expire after 24 hours.</p>
   </main>
   <script src="/assets/dashboard.js" defer></script>
 </body>

@@ -5,11 +5,13 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:web_socket_channel/io.dart';
+import 'audio_features.dart';
 
 void main() => runApp(const VishingMobileApp());
 
@@ -17,6 +19,7 @@ const _ink = Color(0xFF101827);
 const _mint = Color(0xFF5DE0BD);
 const _muted = Color(0xFF9AACC0);
 const _storage = FlutterSecureStorage();
+const _audioChannel = MethodChannel('com.ictak.vishingdetection/audio');
 
 class VishingMobileApp extends StatelessWidget {
   const VishingMobileApp({super.key});
@@ -70,13 +73,27 @@ class _ConnectionHomeState extends State<ConnectionHome> {
   bool _pinMismatchObserved = false;
   LinkState _state = LinkState.starting;
   IOWebSocketChannel? _channel;
+  final _controlMessages = StreamController<Map<String, dynamic>>.broadcast();
+  List<Map<String, dynamic>> _pairedPhones = const [];
   Timer? _heartbeat;
+  Timer? _audioStatusTimer;
   bool _keepConnecting = false;
+  bool _startingAudio = false;
+  bool _audioSessionActive = false;
+  bool _controlledAudioMicActive = false;
+  String _audioStatus = 'stopped';
+  String _audioMessage = 'Call capture is off.';
 
   @override
   void initState() {
     super.initState();
     _load();
+    if (Platform.isAndroid) {
+      _audioStatusTimer = Timer.periodic(
+        const Duration(seconds: 1),
+        (_) => _refreshAudioSession(),
+      );
+    }
   }
 
   Future<void> _load() async {
@@ -96,6 +113,167 @@ class _ConnectionHomeState extends State<ConnectionHome> {
     setState(() => _state =
         _deviceToken == null ? LinkState.notPaired : LinkState.disconnected);
     if (_deviceToken != null) _connectWithRetry();
+    await _refreshAudioSession();
+  }
+
+  Future<void> _refreshAudioSession() async {
+    if (!Platform.isAndroid) return;
+    try {
+      final result = await _audioChannel
+          .invokeMapMethod<String, dynamic>('audioSessionState');
+      if (!mounted || result == null) return;
+      setState(() {
+        _audioStatus = result['status']?.toString() ?? 'stopped';
+        _audioMessage = result['message']?.toString() ?? 'Call capture is off.';
+        _audioSessionActive = result['active'] == true;
+      });
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _audioStatus = 'error';
+          _audioMessage =
+              error.message ?? 'Could not read call capture status.';
+        });
+      }
+    }
+  }
+
+  Future<void> _startAudioSession() async {
+    if (!Platform.isAndroid ||
+        _controlledAudioMicActive ||
+        _deviceToken == null ||
+        _websocketUrl == null ||
+        _pin == null ||
+        _state != LinkState.connected ||
+        _startingAudio) {
+      return;
+    }
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Arm call protection?'),
+        content: const Text(
+          'The app will use Android phone-state permission to detect ringing and cellular-call state; it does not read call logs or caller numbers. It will not record while the phone is idle or ringing. When Android reports a call as off-hook, the microphone starts and streams to your paired desktop until Android returns to idle or you turn protection off. If the desktop connection is interrupted, microphone streaming stops while protection stays armed; streaming can resume after the desktop reconnects and confirms the audio monitor. Android’s off-hook state can include outgoing dialing, an active call, or a held call; it cannot confirm that the other person has answered. Android shows a foreground notification with a Stop action. Android may allow you to swipe the notification away; if that happens while protection is active, the app attempts to show it again and keeps protection running. Use Stop in the notification or app to turn protection off. Android may not provide the caller’s direct call audio or both sides of a conversation; speakerphone capture must be confirmed on this phone. Audio is streamed for live processing and is not saved by this phase.',
+          style: TextStyle(height: 1.45),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (accepted != true || !mounted) return;
+    setState(() {
+      _startingAudio = true;
+      _audioMessage =
+          'Requesting microphone, call-state, and notification permissions.';
+    });
+    try {
+      final permitted =
+          await _audioChannel.invokeMethod<bool>('requestAudioPermissions') ??
+              false;
+      if (!permitted) {
+        throw PlatformException(
+          code: 'permissions_denied',
+          message:
+              'Allow microphone, phone-state, and notification permissions to arm call protection.',
+        );
+      }
+      final audioUrl = Uri.parse(_websocketUrl!)
+          .replace(path: '/api/v1/mobile/audio', query: null, fragment: null)
+          .toString();
+      await _audioChannel.invokeMethod<bool>('startAudioSession', {
+        'websocketUrl': audioUrl,
+        'deviceId': _deviceId,
+        'token': _deviceToken,
+        'fingerprint': _pin,
+      });
+      await _refreshAudioSession();
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _audioStatus = 'error';
+          _audioMessage = error.message ?? 'Could not arm call protection.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _startingAudio = false);
+    }
+  }
+
+  Future<void> _stopAudioSession() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _audioChannel.invokeMethod<bool>('stopAudioSession');
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() =>
+            _audioMessage = error.message ?? 'Could not stop call protection.');
+      }
+    }
+    await _refreshAudioSession();
+  }
+
+  Future<void> _startAudioTransportTest() async {
+    if (!Platform.isAndroid ||
+        _controlledAudioMicActive ||
+        _deviceToken == null ||
+        _websocketUrl == null ||
+        _pin == null ||
+        _state != LinkState.connected ||
+        _audioSessionActive ||
+        _startingAudio) {
+      return;
+    }
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Test desktop audio transport?'),
+        content: const Text(
+          'This sends a generated 440 Hz tone for about six seconds through the paired secure WebSocket. It does not use the microphone or capture a call. The desktop keeps the recent samples temporarily in memory; use “Play recent 5 seconds” on the dashboard to hear them.',
+          style: TextStyle(height: 1.45),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Send test tone')),
+        ],
+      ),
+    );
+    if (accepted != true || !mounted) return;
+    setState(() {
+      _startingAudio = true;
+      _audioMessage = 'Starting the generated audio transport test.';
+    });
+    try {
+      final audioUrl = Uri.parse(_websocketUrl!)
+          .replace(path: '/api/v1/mobile/audio', query: null, fragment: null)
+          .toString();
+      await _audioChannel.invokeMethod<bool>('startAudioTransportTest', {
+        'websocketUrl': audioUrl,
+        'deviceId': _deviceId,
+        'token': _deviceToken,
+        'fingerprint': _pin,
+      });
+      await _refreshAudioSession();
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(() {
+          _audioStatus = 'error';
+          _audioMessage =
+              error.message ?? 'Could not start the audio transport test.';
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _startingAudio = false);
+    }
   }
 
   HttpClient _pinnedClient(String fingerprint) {
@@ -129,6 +307,7 @@ class _ConnectionHomeState extends State<ConnectionHome> {
 
   Future<void> _beginPairing(Map<String, dynamic> payload) async {
     IOClient? ioClient;
+    var pairingStage = 'contacting the desktop pairing service';
     try {
       if (payload['version'] != 1 ||
           payload['https_url'] is! String ||
@@ -166,6 +345,8 @@ class _ConnectionHomeState extends State<ConnectionHome> {
           _desktopName = payload['desktop_name']?.toString();
         });
       }
+      pairingStage =
+          'sending the scanned pairing request to ${base.host}:${base.port}';
       final response = await ioClient
           .post(
             base.resolve('/api/v1/mobile/pairing/request'),
@@ -186,15 +367,32 @@ class _ConnectionHomeState extends State<ConnectionHome> {
       final requestId = request['request_id'].toString();
       String? token;
       final deadline = DateTime.now().add(const Duration(minutes: 3));
+      pairingStage = 'checking for desktop approval';
       while (DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(seconds: 2));
-        final status = await ioClient
-            .post(
-              base.resolve('/api/v1/mobile/pairing/$requestId'),
-              headers: {'content-type': 'application/json'},
-              body: jsonEncode({'claim_secret': claimSecret}),
-            )
-            .timeout(const Duration(seconds: 12));
+        http.Response status;
+        try {
+          status = await ioClient
+              .post(
+                base.resolve('/api/v1/mobile/pairing/$requestId'),
+                headers: {'content-type': 'application/json'},
+                body: jsonEncode({'claim_secret': claimSecret}),
+              )
+              .timeout(const Duration(seconds: 12));
+        } on TimeoutException {
+          if (mounted) {
+            setState(() => _error =
+                'The pairing request was sent. The desktop is slow to answer the approval check; retrying.');
+          }
+          continue;
+        } on SocketException {
+          if (mounted) {
+            setState(() => _error =
+                'The pairing request may be waiting on the desktop. The network dropped during approval polling; retrying.');
+          }
+          continue;
+        }
+        if (mounted && _error != null) setState(() => _error = null);
         if (status.statusCode != 200) {
           throw Exception(_serverMessage(status.body));
         }
@@ -234,16 +432,24 @@ class _ConnectionHomeState extends State<ConnectionHome> {
         _state = LinkState.error;
         _error = _pinMismatchObserved
             ? 'The desktop certificate does not match this pairing code. Check the desktop identity and scan a fresh code.'
-            : _friendlyPairingError(error, payload['https_url']?.toString());
+            : _friendlyPairingError(
+                error, payload['https_url']?.toString(), pairingStage);
       });
     } finally {
       ioClient?.close();
     }
   }
 
-  String _friendlyPairingError(Object error, String? endpoint) {
+  String _friendlyPairingError(
+      Object error, String? endpoint, String pairingStage) {
     final detail = error.toString();
     final lower = detail.toLowerCase();
+    if (error is TimeoutException || lower.contains('timeoutexception')) {
+      final uri = endpoint == null ? null : Uri.tryParse(endpoint);
+      final destination =
+          uri == null ? 'the desktop' : '${uri.host}:${uri.port}';
+      return 'Timed out while $pairingStage. Check the desktop service window: if the dashboard shows a pending phone, the QR request arrived and needs approval. If no request appears, confirm both devices are on the same Wi-Fi, LAN access is enabled, and the desktop is listening at $destination; restart the service and scan a newly generated QR code.';
+    }
     final cannotReach = lower.contains('connection refused') ||
         lower.contains('errno = 111') ||
         lower.contains('errno = 10061') ||
@@ -302,6 +508,11 @@ class _ConnectionHomeState extends State<ConnectionHome> {
         }
         if (deviceStatus.statusCode == 403) {
           _keepConnecting = false;
+          if (Platform.isAndroid) {
+            try {
+              await _audioChannel.invokeMethod<bool>('stopAudioSession');
+            } catch (_) {}
+          }
           if (mounted) {
             setState(() {
               _state = LinkState.error;
@@ -322,14 +533,16 @@ class _ConnectionHomeState extends State<ConnectionHome> {
             'authorization': 'Bearer $_deviceToken',
             'x-device-id': _deviceId!
           },
-          pingInterval: const Duration(seconds: 20),
+          pingInterval: const Duration(seconds: 5),
           connectTimeout: const Duration(seconds: 12),
         );
         _channel = channel;
         await channel.ready.timeout(const Duration(seconds: 14));
         _heartbeat?.cancel();
-        _heartbeat = Timer.periodic(const Duration(seconds: 25),
-            (_) => channel.sink.add(jsonEncode({'type': 'ping'})));
+        _heartbeat = Timer.periodic(const Duration(seconds: 10), (_) {
+          channel.sink.add(jsonEncode({'type': 'ping'}));
+          channel.sink.add(jsonEncode({'type': 'devices.list'}));
+        });
         if (mounted) {
           setState(() {
             _state = LinkState.connected;
@@ -339,10 +552,38 @@ class _ConnectionHomeState extends State<ConnectionHome> {
         await for (final message in channel.stream) {
           if (message is String) {
             final data = jsonDecode(message);
-            if (data is Map && data['type'] == 'connected' && mounted) {
-              setState(() => _state = LinkState.connected);
+            if (data is Map) {
+              final event = Map<String, dynamic>.from(data);
+              if (event['type'] == 'connected' && mounted) {
+                final rawPhones = event['paired_phones'];
+                setState(() {
+                  _state = LinkState.connected;
+                  _pairedPhones = rawPhones is List
+                      ? rawPhones
+                          .whereType<Map>()
+                          .map((item) => Map<String, dynamic>.from(item))
+                          .toList()
+                      : const [];
+                });
+              }
+              if (event['type'] == 'devices.updated' && mounted) {
+                final rawPhones = event['paired_phones'];
+                setState(() => _pairedPhones = rawPhones is List
+                    ? rawPhones
+                        .whereType<Map>()
+                        .map((item) => Map<String, dynamic>.from(item))
+                        .toList()
+                    : const []);
+              }
+              _controlMessages.add(event);
             }
           }
+        }
+        if (_keepConnecting && mounted) {
+          setState(() {
+            _state = LinkState.disconnected;
+            _error = 'Desktop connection closed. Reconnecting automatically.';
+          });
         }
       } catch (error) {
         if (_pinMismatchObserved) {
@@ -364,6 +605,7 @@ class _ConnectionHomeState extends State<ConnectionHome> {
           });
         }
       } finally {
+        _controlMessages.add({'type': 'desktop.disconnected'});
         _heartbeat?.cancel();
         _heartbeat = null;
         _channel?.sink.close();
@@ -397,8 +639,14 @@ class _ConnectionHomeState extends State<ConnectionHome> {
       ),
     );
     if (confirmed != true || !mounted) return;
+    if (Platform.isAndroid) {
+      try {
+        await _audioChannel.invokeMethod<bool>('stopAudioSession');
+      } catch (_) {}
+    }
     _keepConnecting = false;
     _heartbeat?.cancel();
+    _audioStatusTimer?.cancel();
     await _channel?.sink.close();
     _channel = null;
     for (final key in [
@@ -416,8 +664,15 @@ class _ConnectionHomeState extends State<ConnectionHome> {
       _pin = null;
       _desktopName = null;
       _error = null;
+      _controlledAudioMicActive = false;
       _state = LinkState.notPaired;
     });
+  }
+
+  void _sendMobileControl(Map<String, dynamic> message) {
+    final channel = _channel;
+    if (channel == null || _state != LinkState.connected) return;
+    channel.sink.add(jsonEncode({'protocol_version': 1, ...message}));
   }
 
   @override
@@ -425,6 +680,7 @@ class _ConnectionHomeState extends State<ConnectionHome> {
     _keepConnecting = false;
     _heartbeat?.cancel();
     _channel?.sink.close();
+    _controlMessages.close();
     super.dispose();
   }
 
@@ -432,6 +688,9 @@ class _ConnectionHomeState extends State<ConnectionHome> {
   Widget build(BuildContext context) {
     final connected = _state == LinkState.connected;
     final paired = _deviceToken != null;
+    final audioArmed = _audioSessionActive && _audioStatus != 'diagnostic_tone';
+    final diagnosticToneActive =
+        _audioSessionActive && _audioStatus == 'diagnostic_tone';
     return Scaffold(
       appBar:
           AppBar(title: const Text('Vishing Detection'), centerTitle: false),
@@ -517,6 +776,97 @@ class _ConnectionHomeState extends State<ConnectionHome> {
                   style: OutlinedButton.styleFrom(
                       minimumSize: const Size.fromHeight(50))),
             ] else ...[
+              Card(
+                  child: Padding(
+                      padding: const EdgeInsets.all(18),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              const Icon(Icons.graphic_eq, color: _mint),
+                              const SizedBox(width: 9),
+                              Expanded(
+                                  child: Text(
+                                      diagnosticToneActive
+                                          ? 'Audio transport test'
+                                          : 'Cellular call protection',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w700))),
+                              if (_audioStatus == 'capturing')
+                                const Icon(Icons.circle,
+                                    color: Color(0xFFFF7F87), size: 10),
+                            ]),
+                            const SizedBox(height: 9),
+                            Text(_audioStatusLabel(_audioStatus),
+                                style: TextStyle(
+                                  color: _audioStatus == 'capturing'
+                                      ? _mint
+                                      : Colors.white70,
+                                  fontWeight: FontWeight.w700,
+                                )),
+                            const SizedBox(height: 5),
+                            Text(_audioMessage,
+                                style: const TextStyle(
+                                    color: _muted, fontSize: 12, height: 1.45)),
+                            if (audioArmed && !connected) ...[
+                              const SizedBox(height: 7),
+                              const Text(
+                                  'Protection remains armed, but the microphone is off while the desktop is unavailable. Audio streaming resumes after the desktop reconnects and confirms the audio monitor. Turn off protection here if you do not want it to resume.',
+                                  style: TextStyle(
+                                      color: Color(0xFFF4BF69),
+                                      fontSize: 12,
+                                      height: 1.45)),
+                            ],
+                            const SizedBox(height: 12),
+                            if (audioArmed || diagnosticToneActive)
+                              OutlinedButton.icon(
+                                  onPressed: _stopAudioSession,
+                                  icon: const Icon(Icons.stop_circle_outlined),
+                                  label: Text(diagnosticToneActive
+                                      ? 'Stop audio transport test'
+                                      : 'Turn off call protection'),
+                                  style: OutlinedButton.styleFrom(
+                                      minimumSize: const Size.fromHeight(46)))
+                            else
+                              FilledButton.icon(
+                                  onPressed: connected &&
+                                          !_startingAudio &&
+                                          !_controlledAudioMicActive
+                                      ? _startAudioSession
+                                      : null,
+                                  icon: _startingAudio
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2))
+                                      : const Icon(Icons.shield_outlined),
+                                  label: Text(connected
+                                      ? 'Arm call protection'
+                                      : 'Connect to desktop to arm'),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: _mint,
+                                    foregroundColor: _ink,
+                                    minimumSize: const Size.fromHeight(48),
+                                  )),
+                            if (!audioArmed &&
+                                !diagnosticToneActive &&
+                                connected) ...[
+                              const SizedBox(height: 8),
+                              OutlinedButton.icon(
+                                  onPressed: _startingAudio
+                                      ? null
+                                      : _controlledAudioMicActive
+                                          ? null
+                                          : _startAudioTransportTest,
+                                  icon: const Icon(Icons.graphic_eq),
+                                  label: const Text(
+                                      'Send diagnostic tone to desktop'),
+                                  style: OutlinedButton.styleFrom(
+                                      minimumSize: const Size.fromHeight(46))),
+                            ],
+                          ]))),
+              const SizedBox(height: 12),
               OutlinedButton.icon(
                   onPressed: _forget,
                   icon: const Icon(Icons.link_off),
@@ -524,19 +874,40 @@ class _ConnectionHomeState extends State<ConnectionHome> {
                   style: OutlinedButton.styleFrom(
                       minimumSize: const Size.fromHeight(50))),
             ],
+            if (paired) ...[
+              const SizedBox(height: 12),
+              AudioFeaturesPanel(
+                websocketUrl: _websocketUrl!,
+                deviceId: _deviceId!,
+                token: _deviceToken!,
+                fingerprint: _pin!,
+                controlMessages: _controlMessages.stream,
+                pairedPhones: _pairedPhones,
+                sendControl: _sendMobileControl,
+                enabled: connected && !_startingAudio && !_audioSessionActive,
+                onMicrophoneUseChanged: (active) {
+                  if (mounted && _controlledAudioMicActive != active) {
+                    setState(() => _controlledAudioMicActive = active);
+                  }
+                },
+              ),
+            ],
             const SizedBox(height: 22),
-            const Card(
+            Card(
                 child: Padding(
-                    padding: EdgeInsets.all(17),
+                    padding: const EdgeInsets.all(17),
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Connection only',
-                              style: TextStyle(fontWeight: FontWeight.w700)),
-                          SizedBox(height: 6),
+                          Text(paired ? 'Audio and privacy' : 'Connection only',
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
                           Text(
-                              'This screen shows whether the phone is paired and connected. Audio capture and analysis are not active. Cellular call audio access depends on the phone and operating system.',
-                              style: TextStyle(
+                              paired
+                                  ? 'Call protection stays armed only after you start it. The microphone remains off while Android reports idle or ringing, and starts when Android reports off-hook. If the desktop connection is interrupted, the microphone stops while protection stays armed; streaming resumes only after the desktop reconnects and confirms the audio monitor. That state can include outgoing dialing, an active call, or a held call; Android does not tell this app when the other party answers. The app captures microphone input, not a guaranteed digital feed of both call participants. Cellular live audio is not saved. Controlled WebRTC live audio is buffered in RAM; explicitly submitted voice messages are stored on the desktop for up to 24 hours.'
+                                  : 'This screen shows whether the phone is paired and connected. Audio capture and analysis are not active. Cellular call audio access depends on the phone and operating system.',
+                              style: const TextStyle(
                                   color: _muted, fontSize: 12, height: 1.5)),
                         ]))),
           ])),
@@ -552,6 +923,19 @@ class _ConnectionHomeState extends State<ConnectionHome> {
         LinkState.connected => 'Connected to desktop',
         LinkState.disconnected => 'Disconnected · retrying',
         LinkState.error => 'Connection needs attention',
+      };
+
+  String _audioStatusLabel(String status) => switch (status) {
+        'diagnostic_tone' =>
+          'Sending synthetic 440 Hz tone · microphone unused',
+        'arming' => 'Starting call protection',
+        'armed' => 'Armed · microphone off',
+        'incoming_call' => 'Incoming call · microphone off',
+        'capturing' => 'Call in progress · microphone streaming',
+        'waiting_for_connection' => 'Desktop unavailable · microphone off',
+        'capture_unavailable' => 'Capture unavailable',
+        'error' => 'Call protection needs attention',
+        _ => 'Call protection is off',
       };
 }
 

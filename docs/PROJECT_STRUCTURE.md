@@ -7,7 +7,7 @@ VISHING DETECTION/
 ├── backend/
 │   ├── .venv/                 # Local Python environment; ignored by Git
 │   ├── src/vishing/
-│   │   ├── api/               # HTTP/WebSocket pairing and connection boundary
+│   │   ├── api/               # HTTP/WebSocket pairing, connection, and audio transport
 │   │   ├── core/              # Service configuration, TLS, and credential hashing
 │   │   ├── dashboard/         # Local browser control surface
 │   │   ├── modes/
@@ -20,7 +20,11 @@ VISHING DETECTION/
 │   │   └── privacy/           # Consent, retention, and redaction rules
 │   ├── requirements.txt       # Python dependency pins
 │   └── README.md
-├── mobile_app/                # Flutter client; connection screen and pairing
+├── mobile_app/
+│   ├── lib/                    # Flutter pairing, direct audio, controlled calls, clips, and consent UI
+│   └── android/app/src/main/kotlin/ # Foreground services, audio capture, and WebRTC PCM-to-VDA1 tap
+├── scripts/
+│   └── replay_audio.py         # Phone X diagnostic: paced 50 fps VDA1 replay
 ├── docs/                      # Architecture, requirements, roadmap, decisions
 ├── .gitignore
 └── README.md
@@ -35,6 +39,6 @@ VISHING DETECTION/
 
 ## Current implementation status
 
-Phase 1 (development environment) was completed in the earlier project chat. Phase 2 is the mobile-to-desktop connection and includes the Flutter client, FastAPI receiving service, and local browser dashboard. Audio capture and analysis remain later roadmap work.
+Phase 1 and Phase 2 are complete. Phase 3 implementation includes the OS-limited cellular-protection microphone/WSS path, direct phone-to-desktop WebRTC, controlled Phone A ↔ Phone B WebRTC calling with two target-phone VDA1 streams, consented data-channel voice-message transfer and desktop upload, 60-second live RAM previews, and paced VDA1 file replay. VAD, transcription, and analysis remain later roadmap work. Voice-message files live outside the repository under the user's local application-data directory and expire after 24 hours. The Phone A ↔ Phone B, received-clip, and file-replay flows still require two-physical-device validation.
 
 See [ROADMAP.md](ROADMAP.md) for the agreed phase sequence and Phase 2 acceptance criteria.
